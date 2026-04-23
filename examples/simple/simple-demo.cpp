@@ -43,6 +43,18 @@ int main(void) {
     memcpy(tensor_a->data, matrix_A, ggml_nbytes(tensor_a));
     memcpy(tensor_b->data, matrix_B, ggml_nbytes(tensor_b));
 
+    printf("matrix A:\n");
+    for (int i = 0; i < tensor_a->ne[0] * tensor_a->ne[1]; ++i) {
+        printf("%.2f ", ((float *)tensor_a->data)[i]);
+    }
+    printf("\n");
+
+    printf("matrix B:\n");
+    for (int i = 0; i < tensor_b->ne[0] * tensor_b->ne[1]; ++i) {
+        printf("%.2f ", ((float *)tensor_b->data)[i]);
+    }
+    printf("\n");
+
 
     // 3. Create a `ggml_cgraph` for mul_mat operation
     struct ggml_cgraph * gf = ggml_new_graph(ctx);
@@ -54,6 +66,8 @@ int main(void) {
 
     // Mark the "result" tensor to be computed
     ggml_build_forward_expand(gf, result);
+    // ggml_graph_print(gf);
+    // ggml_graph_dump_dot(gf, NULL, "debug.dot");
 
     // 4. Run the computation
     int n_threads = 1; // Optional: number of threads to perform some operations with multi-threading
@@ -61,6 +75,13 @@ int main(void) {
 
     // 5. Retrieve results (output tensors)
     float * result_data = (float *) result->data;
+
+    printf("[ ");
+    for (int i = 0; i < result->ne[0] * result->ne[1]; ++i) {
+        printf(" %.2f", result_data[i]);
+    }
+    printf(" ]\n");
+
     printf("mul mat (%d x %d) (transposed result):\n[", (int) result->ne[0], (int) result->ne[1]);
     for (int j = 0; j < result->ne[1]/* rows */; j++) {
         if (j > 0) {
