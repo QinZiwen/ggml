@@ -472,9 +472,11 @@ struct ggml_threadpool {
     struct ggml_cplan  * cplan;
 
     // synchronization primitives
+    // 原子整数。既作为计数器也作为标志位。它通常用于跟踪当前活动的图数量或正在处理当前图形的工作线程数。其低 16 位通常存储线程计数 (GGML_THREADPOOL_N_THREADS_MASK)。
     atomic_int n_graph;       // updated when there is work to be done (i.e each graph) holds graph and active thread counts.
-    atomic_int GGML_CACHE_ALIGN n_barrier;
-    atomic_int GGML_CACHE_ALIGN n_barrier_passed;
+    atomic_int GGML_CACHE_ALIGN n_barrier;  // 原子整数。用于实现线程间的自定义屏障同步机制，确保所有线程在继续执行前都到达某个同步点。进行了缓存行对齐以防止伪共享
+    atomic_int GGML_CACHE_ALIGN n_barrier_passed;  // 原子整数。与 n_barrier 配合使用，记录屏障成功通过的次数，帮助线程等待直到所有同伴都完成屏障阶段。进行了缓存行对齐。
+    // 原子整数。在执行矩阵乘法 (ggml_compute_forward_mul_mat) 等操作时，跟踪下一个待处理的工作块（chunk）的索引。线程通过原子获取并递增该值来动态分配工作负载。进行了缓存行对齐
     atomic_int GGML_CACHE_ALIGN current_chunk; // currently processing chunk during Mat_Mul, shared between all the threads.
 
     // these are atomic as an annotation for thread-sanitizer
@@ -485,9 +487,10 @@ struct ggml_threadpool {
     struct ggml_compute_state * workers;   // per thread state
     int          n_threads;   // Number of threads in the pool
     int32_t      prio;        // Scheduling priority
+    // 表示轮询级别。如果非零，线程可能会通过自旋等待（轮询）来获取新任务，而不是进入睡眠状态。这可以减少延迟，但会以更高的 CPU 占用为代价。
     uint32_t     poll;        // Polling level (0 - no polling)
 
-    enum ggml_status ec;
+    enum ggml_status ec;  // 用于存储计算图执行后产生的执行状态或错误代码。
 };
 
 // Per-thread state
@@ -592,6 +595,10 @@ void ggml_barrier(struct ggml_threadpool * tp) {
     #ifdef GGML_TSAN_ENABLED
     atomic_fetch_add_explicit(&tp->n_barrier_passed, 0, memory_order_seq_cst);
     #else
+    // atomic_thread_fence 不是 C 标准库（Standard Library, 如 libc）中的函数，而是 C 语言标准（C Standard, 具体是 C11 及以后版本） 中定义的关键字/内置功能。
+    // atomic_thread_fence 是在 C11 标准 中引入的，定义在头文件 <stdatomic.h> 中。
+    // 它属于 C 语言标准的一部分，而不是操作系统提供的 POSIX 库或 Windows API 等“标准库”实现。
+    // 编译器（如 GCC, Clang, MSVC）负责将其翻译成特定的 CPU 指令（如 x86 的 mfence, lfence, sfence 或 ARM 的 dmb 等）。
     atomic_thread_fence(memory_order_seq_cst);
     #endif
 #endif
@@ -3052,6 +3059,10 @@ static inline void ggml_graph_compute_thread_sync(struct ggml_compute_state * st
     #ifdef GGML_TSAN_ENABLED
     atomic_fetch_add_explicit(&state->threadpool->n_graph, 0, memory_order_seq_cst);
     #else
+    // atomic_thread_fence 不是 C 标准库（Standard Library, 如 libc）中的函数，而是 C 语言标准（C Standard, 具体是 C11 及以后版本） 中定义的关键字/内置功能。
+    // atomic_thread_fence 是在 C11 标准 中引入的，定义在头文件 <stdatomic.h> 中。
+    // 它属于 C 语言标准的一部分，而不是操作系统提供的 POSIX 库或 Windows API 等“标准库”实现。
+    // 编译器（如 GCC, Clang, MSVC）负责将其翻译成特定的 CPU 指令（如 x86 的 mfence, lfence, sfence 或 ARM 的 dmb 等）。
     atomic_thread_fence(memory_order_seq_cst);
     #endif
     UNUSED(state);
@@ -3072,6 +3083,9 @@ static inline bool ggml_graph_compute_poll_for_work(struct ggml_compute_state * 
     return state->pending;
 }
 
+// 决定当前线程是继续处理新任务，还是进入休眠等待。
+// 轮询模式（Polling）：如果启用了轮询，线程会短暂地自旋检查，以减少上下文切换带来的延迟。
+// 阻塞等待模式（Blocking Wait）：如果没有立即获取到工作或未启用轮询，线程会通过条件变量进入休眠，直到被主线程唤醒。
 static inline bool ggml_graph_compute_check_for_work(struct ggml_compute_state * state) {
     struct ggml_threadpool * threadpool = state->threadpool;
 
@@ -3135,8 +3149,14 @@ static void ggml_graph_compute_kickoff(struct ggml_threadpool * threadpool, int 
 
     ggml_mutex_lock(&threadpool->mutex);
 
+    // threadpool->n_graph 是一个 atomic_int。通过在一个原子变量中同时存储“图ID”和“线程数”，可以使用单个原子操作（如 atomic_store 或 atomic_compare_exchange）同时更新这两个状态。这避免了需要两个独立的锁或原子变量，从而减少了竞争开销。
+
+    // 它们利用位运算将一个整数变量 (n_graph) 打包了两种不同的信息：当前正在处理的计算图索引 和 活跃线程数量。
     // Update the number of active threads and the graph count
+    // >> GGML_THREADPOOL_N_THREADS_BITS: 右移 16 位。这将低 16 位（线程数）移出，原本的高位部分现在变成了低位。
     int n_graph = atomic_load_explicit(&threadpool->n_graph, memory_order_relaxed) >> GGML_THREADPOOL_N_THREADS_BITS;
+    // << GGML_THREADPOOL_N_THREADS_BITS: 左移 16 位。将递增后的索引移回高位区域。
+    // n_threads & GGML_THREADPOOL_N_THREADS_MASK: 确保线程数只占用低 16 位，防止高位数据污染。
     n_graph = ((n_graph + 1) << GGML_THREADPOOL_N_THREADS_BITS) | (n_threads & GGML_THREADPOOL_N_THREADS_MASK);
 
     GGML_PRINT_DEBUG("compute-kickoff: n_threads %d n_graph %d\n", n_threads, n_graph);
@@ -3302,7 +3322,7 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
     ggml_graph_compute_kickoff(threadpool, n_threads);
 
     // This is a work thread too
-    ggml_graph_compute_thread(&threadpool->workers[0]);
+    ggml_graph_compute_thread(&threadpool->workers[0]);   // &threadpool->workers[0]语义上更明确
 #endif
 
     // don't leave affinity set on the main thread

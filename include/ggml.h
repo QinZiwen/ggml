@@ -2822,8 +2822,18 @@ extern "C" {
         bool                cpumask[GGML_MAX_N_THREADS]; // mask of cpu cores (all-zeros means use default affinity settings)
         int                 n_threads;                   // number of threads
         enum ggml_sched_priority prio;                   // thread priority
+        /*
+        0: 不轮询（线程在空闲时可能睡眠/等待，节省 CPU 但增加唤醒延迟）。
+        100: 积极轮询（线程主动检查新任务，降低延迟但在空闲时增加 CPU 占用）。
+        0 到 100 之间的值代表不同强度的轮询级别。
+        */
         uint32_t            poll;                        // polling level (0 - no polling, 100 - aggressive polling)
+        //  如果为 true，库将更强烈地尝试确保线程仅在指定的核心上运行，如果操作系统无法保证这种亲和性，可能会失败或发出警告。如果为 false，操作系统调度器在迁移线程方面有更大的自由度。
         bool                strict_cpu;                  // strict cpu placement
+        /*
+        true: 线程池以暂停状态启动。线程被创建但不处理任务，直到显式恢复。这对于设置依赖关系或同步开始时间很有用。
+        false: 线程池启动后立即处于活动状态，并开始处理排队任务。
+        */
         bool                paused;                      // start in paused state
     };
 

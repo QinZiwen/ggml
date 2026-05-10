@@ -66,7 +66,7 @@ int main(void) {
 
     // Mark the "result" tensor to be computed
     ggml_build_forward_expand(gf, result);
-    // ggml_graph_print(gf);
+    ggml_graph_print(gf);
     // ggml_graph_dump_dot(gf, NULL, "debug.dot");
 
     // 4. Run the computation

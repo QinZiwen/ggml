@@ -940,14 +940,14 @@ const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type) {
 //
 
 struct ggml_object {
-    size_t offs;
-    size_t size;
+    size_t offs; // 8 bytes
+    size_t size; // 8 bytes
 
-    struct ggml_object * next;
+    struct ggml_object * next;  // 8 bytes
 
-    enum ggml_object_type type;
+    enum ggml_object_type type;  // 4 bytes
 
-    char padding[4];
+    char padding[4];    // 4 bytes
 };
 
 static const size_t GGML_OBJECT_SIZE = sizeof(struct ggml_object);
@@ -956,16 +956,17 @@ static const size_t GGML_OBJECT_SIZE = sizeof(struct ggml_object);
 // ggml context
 //
 
+// 是 ggml 库中用于管理内存和对象生命周期的核心结构体。它本质上是一个**内存池（Memory Pool）**管理器。
 struct ggml_context {
-    size_t mem_size;
-    void * mem_buffer;
-    bool   mem_buffer_owned;
-    bool   no_alloc;
+    size_t mem_size;    // 内存缓冲区的总大小（以字节为单位）。
+    void * mem_buffer;    // 指向实际分配的连续内存块的指针。
+    bool   mem_buffer_owned;   // 标记当前上下文是否“拥有”这块内存缓冲区，如果为 true：当调用 [ggml_free]
+    bool   no_alloc;  // 如果为 false（默认）：创建新张量时，ggml 会在 mem_buffer 中自动为其数据分配空间。如果为 true：创建张量时，只分配张量的元数据（header），不分配数据存储区。这通常用于“干跑”（dry run）来计算计算图所需的总内存大小，或者用于后端手动管理内存的场景。
 
-    int    n_objects;
+    int    n_objects;  // 当前上下文中已分配的对象数量。
 
-    struct ggml_object * objects_begin;
-    struct ggml_object * objects_end;
+    struct ggml_object * objects_begin;  // 指向链表中第一个对象的指针。
+    struct ggml_object * objects_end;    // 指向链表中最后一个对象的指针。
 };
 
 //
@@ -1592,6 +1593,11 @@ struct ggml_context * ggml_init(struct ggml_init_params params) {
 
     const size_t mem_size = params.mem_buffer ? params.mem_size : GGML_PAD(params.mem_size, GGML_MEM_ALIGN);
 
+    // 这种写法强制你在一块代码块中处理所有字段。
+    // 对于 *ctx = { ... } 这种形式，编译器通常不会真的生成一个临时结构体然后调用 memcpy。
+    // 它会直接生成针对每个成员变量的存储指令（store instructions），效率与逐个赋值完全一样，甚至更好，因为它知道这是一次性初始化，可以进行更多的寄存器优化。
+    // 清晰的结构：这种写法像是一个配置清单。阅读者可以一眼看清 ggml_context 的所有初始状态。
+    // 易于重构：如果未来 struct ggml_context 增加了一个新字段，编译器在使用这种初始化列表时（如果开启了警告 -Wmissing-field-initializers）可能会提示你漏掉了新字段。而如果是逐个赋值，编译器通常不会报错，导致新字段被遗留为垃圾值，引入难以排查的 Bug。
     *ctx = (struct ggml_context) {
         /*.mem_size           =*/ mem_size,
         /*.mem_buffer         =*/ params.mem_buffer ? params.mem_buffer : ggml_aligned_malloc(mem_size),
@@ -1702,7 +1708,7 @@ static struct ggml_object * ggml_new_object(struct ggml_context * ctx, enum ggml
     }
 
     *obj_new = (struct ggml_object) {
-        .offs = cur_end + GGML_OBJECT_SIZE,
+        .offs = cur_end + GGML_OBJECT_SIZE,   // GGML_OBJECT_SIZE中存的是ggml_object
         .size = size_needed,
         .next = NULL,
         .type = type,
@@ -1778,7 +1784,7 @@ static struct ggml_tensor * ggml_new_tensor_impl(
         /*.src          =*/ { NULL },
         /*.view_src     =*/ view_src,
         /*.view_offs    =*/ view_offs,
-        /*.data         =*/ obj_alloc_size > 0 ? (void *)(result + 1) : data,
+        /*.data         =*/ obj_alloc_size > 0 ? (void *)(result + 1) : data,  // 对结构体指针进行加法运算时，增加的字节数等于该结构体的大小
         /*.name         =*/ { 0 },
         /*.extra        =*/ NULL,
         /*.padding      =*/ { 0 },
@@ -1797,7 +1803,7 @@ static struct ggml_tensor * ggml_new_tensor_impl(
         result->nb[i] = result->nb[i - 1]*result->ne[i - 1];
     }
 
-    ctx->n_objects++;
+    ctx->n_objects++;  // 在优化级别开启时（如 -O2 或 -O3），会识别出返回值未被使用，从而省略保存副本的步骤
 
     return result;
 }
@@ -6248,7 +6254,7 @@ void ggml_hash_set_free(struct ggml_hash_set * hash_set) {
     GGML_FREE(hash_set->keys);
 }
 
-size_t ggml_hash_size(size_t min_sz) {
+size_t ggml_hash_size(size_t min_sz) { // 根据给定的最小容量需求，计算出一个适合哈希表（Hash Table）使用的数组大小。它的核心设计原则是：哈希表的底层数组大小必须是一个质数（Prime Number）。在哈希表的实现中（特别是使用“除留余数法” hash % size 来映射索引时），如果表的大小是合数（非质数），且该合数与哈希值的分布存在公因子，会导致严重的哈希冲突（Collisions聚集
     // next primes after powers of two
     static const size_t primes[] = {
         2, 3, 5, 11, 17, 37, 67, 131, 257, 521, 1031,
@@ -7065,7 +7071,7 @@ static void * incr_ptr_aligned(void ** p, size_t size, size_t align) {
 }
 
 static size_t ggml_graph_nbytes(size_t size, bool grads) {
-    size_t hash_size = ggml_hash_size(size * 2);
+    size_t hash_size = ggml_hash_size(size * 2);   // 计算出哈希表大小
     void * p = 0;
     incr_ptr_aligned(&p, sizeof(struct ggml_cgraph), 1);
     incr_ptr_aligned(&p, size * sizeof(struct ggml_tensor *), sizeof(struct ggml_tensor *)); // nodes
@@ -7098,7 +7104,7 @@ struct ggml_cgraph * ggml_new_graph_custom(struct ggml_context * ctx, size_t siz
     // the size of the hash table is doubled since it needs to hold both nodes and leafs
     size_t hash_size = ggml_hash_size(size * 2);
 
-    void * p = cgraph + 1;
+    void * p = cgraph + 1;    // +1 表示指针跳过了一个ggml_cgraph，用于存储他本身
 
     struct ggml_tensor ** nodes_ptr      =         incr_ptr_aligned(&p, size      * sizeof(struct ggml_tensor *), sizeof(struct ggml_tensor *));
     struct ggml_tensor ** leafs_ptr      =         incr_ptr_aligned(&p, size      * sizeof(struct ggml_tensor *), sizeof(struct ggml_tensor *));
