@@ -571,14 +571,14 @@ void ggml_barrier(struct ggml_threadpool * tp) {
 #ifdef GGML_USE_OPENMP
     #pragma omp barrier
 #else
-    int n_passed = atomic_load_explicit(&tp->n_barrier_passed, memory_order_relaxed);
+    int n_passed = atomic_load_explicit(&tp->n_barrier_passed, memory_order_relaxed);  // 记录屏障已经成功通过了多少次（用于区分不同轮次的屏障调用）
 
-    // enter barrier (full seq-cst fence)
-    int n_barrier = atomic_fetch_add_explicit(&tp->n_barrier, 1, memory_order_seq_cst);
+    // enter barrier (full seq-cst fence)； 线程原子地将 n_barrier 加 1，并获取加之前的值。
+    int n_barrier = atomic_fetch_add_explicit(&tp->n_barrier, 1, memory_order_seq_cst);  // 记录当前有多少个线程已经到达屏障入口。
 
     if (n_barrier == (n_threads - 1)) {
         // last thread
-        atomic_store_explicit(&tp->n_barrier, 0, memory_order_relaxed);
+        atomic_store_explicit(&tp->n_barrier, 0, memory_order_relaxed);  // 重置计数器，为下一轮做准备
 
         // exit barrier (full seq-cst fence)
         atomic_fetch_add_explicit(&tp->n_barrier_passed, 1, memory_order_seq_cst);
@@ -590,7 +590,7 @@ void ggml_barrier(struct ggml_threadpool * tp) {
         ggml_thread_cpu_relax();
     }
 
-    // exit barrier (full seq-cst fence)
+    // exit barrier (full seq-cst fence)；这确保了线程在屏障之后的代码能看到屏障之前所有线程所做的修改
     // TSAN doesn't support standalone fence yet, we use a dummy read-modify-write instead
     #ifdef GGML_TSAN_ENABLED
     atomic_fetch_add_explicit(&tp->n_barrier_passed, 0, memory_order_seq_cst);
@@ -1159,7 +1159,7 @@ static void ggml_compute_forward_mul_mat_one_chunk(
     const struct ggml_compute_params * params,
     struct ggml_tensor * dst,
     const enum ggml_type type,
-    const int64_t num_rows_per_vec_dot,
+    const int64_t num_rows_per_vec_dot,  // 每次向量点积操作处理的行数。通常为 1
     const int64_t ir0_start,
     const int64_t ir0_end,
     const int64_t ir1_start,
@@ -1187,7 +1187,7 @@ static void ggml_compute_forward_mul_mat_one_chunk(
     }
 
     const void * wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
-    const size_t row_size = ggml_row_size(vec_dot_type, ne10);
+    const size_t row_size = ggml_row_size(vec_dot_type, ne10);  // src1 一行字节数
 
     assert(ne12 % ne02 == 0);
     assert(ne13 % ne03 == 0);
@@ -1199,16 +1199,32 @@ static void ggml_compute_forward_mul_mat_one_chunk(
     const size_t src1_col_stride = src1_cont || src1->type != vec_dot_type ? row_size : nb11;
 
     // attempt to reduce false-sharing (does not seem to make a difference)
-    // 16 * 2, accounting for mmla kernels
+    // 16 * 2, accounting for mmla kernels，ARM 的 MMLA（Matrix Multiply Accumulate）指令，一次处理 16 个元素
     float tmp[32];
 
+    /*
+    const int64_t nr0 = ne0;                    // 结果的行数
+    const int64_t nr1 = ne1 * ne2 * ne3;        // 结果的列数（扁平化）
+    所以 ir1 的范围是 [0, nr1)，它编码了三维信息：列索引(i1)、深度索引(i2)、批次索引(i3)
+
+    ir1 = i1 + i2 * ne1 + i3 * (ne1 * ne2)
+    解码就是反向操作
+    i3 = ir1 / (ne1 * ne2)
+    i2 = (ir1 % (ne1 * ne2)) / ne1
+    i1 = ir1 % ne1
+
+    ggml中使用了减法，没有使用取模，因为减法比取模更快
+    */
     for (int64_t iir1 = ir1_start; iir1 < ir1_end; iir1 += blck_1) {
         for (int64_t iir0 = ir0_start; iir0 < ir0_end; iir0 += blck_0) {
             for (int64_t ir1 = iir1; ir1 < iir1 + blck_1 && ir1 < ir1_end; ir1 += num_rows_per_vec_dot) {
-                const int64_t i13 = (ir1 / (ne12 * ne1));
+                const int64_t i13 = (ir1 / (ne12 * ne1));        // ne12 == ne2
                 const int64_t i12 = (ir1 - i13 * ne12 * ne1) / ne1;
-                const int64_t i11 = (ir1 - i13 * ne12 * ne1 - i12 * ne1);
+                const int64_t i11 = (ir1 - i13 * ne12 * ne1 - i12 * ne1);  // i1 = (ir1 % (ne1 * ne2)) % ne1
 
+                // assert(ne12 % ne02 == 0);
+                // assert(ne13 % ne03 == 0);
+                // 要求src1的第2，3位是src0的整数倍，所以这里可以这么广播
                 // broadcast src0 into src1
                 const int64_t i03 = i13 / r3;
                 const int64_t i02 = i12 / r2;
@@ -1234,7 +1250,14 @@ static void ggml_compute_forward_mul_mat_one_chunk(
                 //}
 
                 for (int64_t ir0 = iir0; ir0 < iir0 + blck_0 && ir0 < ir0_end; ir0 += num_rows_per_vec_dot) {
-                    vec_dot(ne00, &tmp[ir0 - iir0], (num_rows_per_vec_dot > 1 ? 16 : 0), src0_row + ir0 * nb01, (num_rows_per_vec_dot > 1 ? nb01 : 0), src1_col, (num_rows_per_vec_dot > 1 ? src1_col_stride : 0), num_rows_per_vec_dot);
+                    vec_dot(ne00,
+                        &tmp[ir0 - iir0],
+                        (num_rows_per_vec_dot > 1 ? 16 : 0),
+                        src0_row + ir0 * nb01,
+                        (num_rows_per_vec_dot > 1 ? nb01 : 0),
+                        src1_col,
+                        (num_rows_per_vec_dot > 1 ? src1_col_stride : 0),
+                        num_rows_per_vec_dot);
                 }
 
                 for (int cn = 0; cn < num_rows_per_vec_dot; ++cn) {
@@ -1252,20 +1275,56 @@ void ggml_compute_forward_mul_mat(
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
 
+    // 获取计算参数
     const int32_t hint = ggml_get_op_params_i32(dst, 1);
-    if (hint == GGML_HINT_SRC0_IS_HADAMARD && !params->use_ref) {
+    if (hint == GGML_HINT_SRC0_IS_HADAMARD && !params->use_ref) {   // 执行哈达玛积
         ggml_compute_forward_fwht(params, dst);
         return;
     }
 
+    // 将输入张量（src0, src1）和输出张量（dst）的维度信息（ne）和步长信息（nb）提取为局部常量变量。方便后续使用
     GGML_TENSOR_BINARY_OP_LOCALS
+    /*
+    1. 提取 src0 的维度 (ne) 和步长 (nb)
+    const int64_t ne00 = src0 ? src0->ne[0] : 0; GGML_UNUSED(ne00);
+    const int64_t ne01 = src0 ? src0->ne[1] : 0; GGML_UNUSED(ne01);
+    const int64_t ne02 = src0 ? src0->ne[2] : 0; GGML_UNUSED(ne02);
+    const int64_t ne03 = src0 ? src0->ne[3] : 0; GGML_UNUSED(ne03);
+
+    const size_t nb00 = src0 ? src0->nb[0] : 0; GGML_UNUSED(nb00);
+    const size_t nb01 = src0 ? src0->nb[1] : 0; GGML_UNUSED(nb01);
+    const size_t nb02 = src0 ? src0->nb[2] : 0; GGML_UNUSED(nb02);
+    const size_t nb03 = src0 ? src0->nb[3] : 0; GGML_UNUSED(nb03);
+
+    2. 提取 src1 的维度 (ne) 和步长 (nb)
+    const int64_t ne10 = src1 ? src1->ne[0] : 0; GGML_UNUSED(ne10);
+    const int64_t ne11 = src1 ? src1->ne[1] : 0; GGML_UNUSED(ne11);
+    const int64_t ne12 = src1 ? src1->ne[2] : 0; GGML_UNUSED(ne12);
+    const int64_t ne13 = src1 ? src1->ne[3] : 0; GGML_UNUSED(ne13);
+
+    const size_t nb10 = src1 ? src1->nb[0] : 0; GGML_UNUSED(nb10);
+    const size_t nb11 = src1 ? src1->nb[1] : 0; GGML_UNUSED(nb11);
+    const size_t nb12 = src1 ? src1->nb[2] : 0; GGML_UNUSED(nb12);
+    const size_t nb13 = src1 ? src1->nb[3] : 0; GGML_UNUSED(nb13);
+
+    3. 提取 dst 的维度 (ne) 和步长 (nb)
+    const int64_t ne0 = dst ? dst->ne[0] : 0; GGML_UNUSED(ne0);
+    const int64_t ne1 = dst ? dst->ne[1] : 0; GGML_UNUSED(ne1);
+    const int64_t ne2 = dst ? dst->ne[2] : 0; GGML_UNUSED(ne2);
+    const int64_t ne3 = dst ? dst->ne[3] : 0; GGML_UNUSED(ne3);
+
+    const size_t nb0 = dst ? dst->nb[0] : 0; GGML_UNUSED(nb0);
+    const size_t nb1 = dst ? dst->nb[1] : 0; GGML_UNUSED(nb1);
+    const size_t nb2 = dst ? dst->nb[2] : 0; GGML_UNUSED(nb2);
+    const size_t nb3 = dst ? dst->nb[3] : 0; GGML_UNUSED(nb3);
+    */
 
     const int ith = params->ith;
     const int nth = params->nth;
 
-    enum ggml_type           const vec_dot_type         = type_traits_cpu[src0->type].vec_dot_type;
-    ggml_from_float_t        const from_float           = type_traits_cpu[vec_dot_type].from_float;
-    int64_t                  const vec_dot_num_rows     = type_traits_cpu[src0->type].nrows;
+    enum ggml_type           const vec_dot_type         = type_traits_cpu[src0->type].vec_dot_type;  // 向量点积的目标数据类型。它决定了在计算矩阵乘法（本质上是大量的向量点积）时，src1（通常是激活值，通常为 F32）需要被转换（量化）成什么格式，以便与 src0（权重）进行高效计算。
+    ggml_from_float_t        const from_float           = type_traits_cpu[vec_dot_type].from_float;  //从浮点数转换到目标量化格式的函数指针。由于 src1 传入时通常是 F32 格式，而计算内核（由 vec_dot_type 决定）可能需要量化后的数据（如 Q8_0），因此需要一个函数将 F32 数据批量转换为目标格式。这个指针指向具体的转换实现。
+    int64_t                  const vec_dot_num_rows     = type_traits_cpu[src0->type].nrows;  // 单次向量点积操作处理的行数。这是一个性能优化参数，主要用于利用特定的 CPU 指令集（如 ARM 的 MMLA 指令或 x86 的 AVX-512）。
 
     GGML_ASSERT(ne0 == ne01);
     GGML_ASSERT(ne1 == ne11);
@@ -1388,7 +1447,7 @@ UseGgmlGemm2:;
     const int64_t nr1 = ne1 * ne2 * ne3;
 
     // Now select a reasonable chunk size.
-    int chunk_size = 16;
+    int chunk_size = 16;  // 经验值，利于调度，缓存友好，在 x86/arm 架构上，一个缓存行通常是 64 字节。
 
     // We need to step up the size if it's small
     if (nr0 == 1 || nr1 == 1) {
@@ -1398,12 +1457,13 @@ UseGgmlGemm2:;
     // distribute the work across the inner or outer loop based on which one is larger
     // The number of chunks in the 0/1 dim.
     // CEIL(nr0/chunk_size)
-    int64_t nchunk0 = (nr0 + chunk_size - 1) / chunk_size;
-    int64_t nchunk1 = (nr1 + chunk_size - 1) / chunk_size;
+    int64_t nchunk0 = (nr0 + chunk_size - 1) / chunk_size;  // 计算向上取整的整数除法，在 C/C++ 中，整数除法 / 是向下取整的
+    int64_t nchunk1 = (nr1 + chunk_size - 1) / chunk_size;  // 等价写法：nchunk1 = (nr1 - 1) / chunk_size + 1;
 
     // If the chunking is poor for the number of threads on this setup, scrap the whole plan.  Re-chunk it by thread.
     //   Also, chunking by thread was measured to have perform better on NUMA systems.  See https://github.com/ggml-org/llama.cpp/pull/6915
     //   In theory, chunking should be just as useful on NUMA and non NUMA systems, but testing disagreed with that.
+    // 直接在大的维度上切块，小维度不切
     if (nchunk0 * nchunk1 < nth * 4 || ggml_is_numa()) {
         // distribute the thread work across the inner or outer loop based on which one is larger
         nchunk0 = nr0 > nr1 ? nth : 1; // parallelize by src0 rows
@@ -1411,14 +1471,14 @@ UseGgmlGemm2:;
     }
 
     // The number of elements in each chunk
-    const int64_t dr0 = (nr0 + nchunk0 - 1) / nchunk0;
+    const int64_t dr0 = (nr0 + nchunk0 - 1) / nchunk0;  // 一般为16，可能大于16，受到线程数的影响
     const int64_t dr1 = (nr1 + nchunk1 - 1) / nchunk1;
 
     // The first chunk comes from our thread_id, the rest will get auto-assigned.
     int current_chunk = ith;
 
     while (current_chunk < nchunk0 * nchunk1) {
-        const int64_t ith0 = current_chunk % nchunk0;
+        const int64_t ith0 = current_chunk % nchunk0;  // 将一维的任务索引（current_chunk）映射到二维的线程/块索引（ith0, ith1）
         const int64_t ith1 = current_chunk / nchunk0;
 
         const int64_t ir0_start = dr0 * ith0;

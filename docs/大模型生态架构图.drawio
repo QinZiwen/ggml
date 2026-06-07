@@ -1,0 +1,61 @@
+<mxfile host="Electron">
+  <diagram name="第 1 页" id="amp9vrf9xFd-Cwb0aQ-e">
+    <mxGraphModel dx="1653" dy="850" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="BPEKcc9uygewi1D_cKRM-15" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="应用层" vertex="1">
+          <mxGeometry height="30" width="100" x="50" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-23" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="接口层" vertex="1">
+          <mxGeometry height="30" width="100" x="50" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-24" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="推理层" vertex="1">
+          <mxGeometry height="30" width="100" x="50" y="230" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-25" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="模型层" vertex="1">
+          <mxGeometry height="30" width="100" x="50" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-26" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="计算层" vertex="1">
+          <mxGeometry height="30" width="100" x="50" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-27" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="硬件加速层" vertex="1">
+          <mxGeometry height="30" width="100" x="50" y="380" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-29" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="硬件层" vertex="1">
+          <mxGeometry height="30" width="100" x="50" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-30" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="&lt;b data-path-to-node=&quot;3,12,2,0&quot; data-index-in-node=&quot;0&quot;&gt;GPU:&lt;/b&gt; H100, RTX 5090 | &lt;b data-path-to-node=&quot;3,12,2,0&quot; data-index-in-node=&quot;22&quot;&gt;CPU:&lt;/b&gt; M2 Ultra, Threadripper | &lt;b data-path-to-node=&quot;3,12,2,0&quot; data-index-in-node=&quot;52&quot;&gt;NPU:&lt;/b&gt; Groq, TPU" vertex="1">
+          <mxGeometry height="30" width="520" x="190" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-32" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="NVIDIA CUDA, AMD ROCm, Apple Metal, Intel oneAPI, OpenCL" vertex="1">
+          <mxGeometry height="30" width="520" x="190" y="380" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-33" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="&lt;span data-path-to-node=&quot;3,9,1,0&quot;&gt;&lt;b data-path-to-node=&quot;3,9,1,0&quot; data-index-in-node=&quot;0&quot;&gt;&lt;/b&gt;&lt;/span&gt;&lt;span data-path-to-node=&quot;3,9,2,0&quot;&gt;&lt;b data-path-to-node=&quot;3,9,2,0&quot; data-index-in-node=&quot;0&quot;&gt;BLAS:&lt;/b&gt; cuBLAS, Apple Accelerate, Intel MKL&lt;/span&gt;" vertex="1">
+          <mxGeometry height="30" width="290" x="190" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-34" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="&lt;b data-path-to-node=&quot;3,8,2,0&quot; data-index-in-node=&quot;0&quot;&gt;格式:&lt;/b&gt; &lt;b data-path-to-node=&quot;3,8,2,0&quot; data-index-in-node=&quot;4&quot;&gt;GGUF&lt;/b&gt;, Safetensors, Protobuf | &lt;b data-path-to-node=&quot;3,8,2,0&quot; data-index-in-node=&quot;34&quot;&gt;模型:&lt;/b&gt; &lt;b data-path-to-node=&quot;3,8,2,0&quot; data-index-in-node=&quot;38&quot;&gt;DeepSeek-V3/R1&lt;/b&gt;, Llama 3.2, Qwen" vertex="1">
+          <mxGeometry height="30" width="520" x="190" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-35" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="&lt;b data-path-to-node=&quot;3,4,2,0&quot; data-index-in-node=&quot;0&quot;&gt;跨平台:&lt;/b&gt; &lt;b data-path-to-node=&quot;3,4,2,0&quot; data-index-in-node=&quot;5&quot;&gt;llama.cpp&lt;/b&gt;, MLC-LLM | &lt;b data-path-to-node=&quot;3,4,2,0&quot; data-index-in-node=&quot;26&quot;&gt;GPU特化:&lt;/b&gt; TensorRT-LLM, FasterTransformer" vertex="1">
+          <mxGeometry height="30" width="520" x="190" y="230" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-36" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="&lt;b data-path-to-node=&quot;3,3,2,0&quot; data-index-in-node=&quot;0&quot;&gt;本地:&lt;/b&gt; &lt;b data-path-to-node=&quot;3,3,2,0&quot; data-index-in-node=&quot;4&quot;&gt;Ollama&lt;/b&gt;, LM Studio | &lt;b data-path-to-node=&quot;3,3,2,0&quot; data-index-in-node=&quot;24&quot;&gt;分布式:&lt;/b&gt; vLLM, Ray, Triton, KServe" vertex="1">
+          <mxGeometry height="30" width="520" x="190" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-37" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="&lt;b data-path-to-node=&quot;3,2,2,0&quot; data-index-in-node=&quot;0&quot;&gt;IDE:&lt;/b&gt; Cursor, Windsurf, Zed" vertex="1">
+          <mxGeometry height="30" width="170" x="190" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-40" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="&lt;b data-path-to-node=&quot;3,9,2,0&quot; data-index-in-node=&quot;49&quot;&gt;ggml&lt;/b&gt;" vertex="1">
+          <mxGeometry height="30" width="210" x="500" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-41" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="&lt;b data-path-to-node=&quot;3,2,2,0&quot; data-index-in-node=&quot;29&quot;&gt;CLI:&lt;/b&gt; &lt;span data-path-to-node=&quot;3,2,2,0&quot; data-index-in-node=&quot;34&quot;&gt;Claude Code&lt;/span&gt;, openclaw，Hermes Agent" vertex="1">
+          <mxGeometry height="30" width="150" x="380" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="BPEKcc9uygewi1D_cKRM-42" parent="1" style="rounded=1;whiteSpace=wrap;html=1;shadow=1;" value="&lt;b data-path-to-node=&quot;3,2,2,0&quot; data-index-in-node=&quot;55&quot;&gt;App:&lt;/b&gt; 豆包, ChatGPT，coze" vertex="1">
+          <mxGeometry height="30" width="160" x="550" y="130" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

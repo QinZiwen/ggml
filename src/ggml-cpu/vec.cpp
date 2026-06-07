@@ -101,24 +101,35 @@ void ggml_vec_dot_f32(int n, float * GGML_RESTRICT s, size_t bs, const float * G
         vs = __riscv_vfredusum_vs_f32m8_f32m1(vsum, vs, vl);
         sumf += __riscv_vfmv_f_s_f32m1_f32(vs);
     #else
-        const int np = (n & ~(GGML_F32_STEP - 1));
+        const int np = (n & ~(GGML_F32_STEP - 1));  // 向下对齐到 step 的倍数，(n / step) * step; 或者 n - (n % step)
 
+        /*
+        如果只用一个 sum 寄存器，每次执行 FMA (Fused Multiply-Add) 指令后，下一次迭代必须等待上一次的结果就绪才能继续累加，这会导致流水线停顿。
+        使用多个累加器（例如 sum[0] 到 sum[3]），CPU 可以同时发出多条独立的 FMA 指令，因为它们操作不同的寄存器，互不依赖。
+        */
         GGML_F32_VEC sum[GGML_F32_ARR] = { GGML_F32_VEC_ZERO };
 
-        GGML_F32_VEC ax[GGML_F32_ARR];
+        GGML_F32_VEC ax[GGML_F32_ARR];  // GGML_F32_ARR 是展开因子
         GGML_F32_VEC ay[GGML_F32_ARR];
 
+        // GGML_F32_STEP 通常等于 GGML_F32_EPR * GGML_F32_ARR
         for (int i = 0; i < np; i += GGML_F32_STEP) {
             for (int j = 0; j < GGML_F32_ARR; j++) {
-                ax[j] = GGML_F32_VEC_LOAD(x + i + j*GGML_F32_EPR);
-                ay[j] = GGML_F32_VEC_LOAD(y + i + j*GGML_F32_EPR);
+                ax[j] = GGML_F32_VEC_LOAD(x + i + j*GGML_F32_EPR);  // (Elements Per Register) 是一个 SIMD 寄存器能容纳的 float 数量
+                ay[j] = GGML_F32_VEC_LOAD(y + i + j*GGML_F32_EPR);  // GGML_F32_VEC_LOAD：从内存加载数据到 SIMD 寄存器。
 
+                /*
+                优势：FMA 指令只需一个时钟周期即可完成乘法和加法，且精度更高（只进行一次舍入）。
+                并行性：由于 sum[0], sum[1], sum[2], sum[3] 是独立的，现代 CPU 可以并行执行这些 FMA 指令，极大地提高了吞吐量。
+                */
+                // GGML_F32_VEC_FMA：执行融合乘加操作 sum[j] = sum[j] + ax[j] * ay[j]
+                // 可以并发处理寄存器的中的数据，执行乘加操作
                 sum[j] = GGML_F32_VEC_FMA(sum[j], ax[j], ay[j]);
             }
         }
 
-        // reduce sum0..sum3 to sum0
-        GGML_F32_VEC_REDUCE(sumf, sum);
+        // reduce sum0..sum3 to sum0，数据归约
+        GGML_F32_VEC_REDUCE(sumf, sum);  // “归约”强调的是“降维”（把一组数据变成一个值），而“合并”强调的是“拼接”（把两组数据变成一组更大的数据）
 
         // leftovers
         for (int i = np; i < n; ++i) {

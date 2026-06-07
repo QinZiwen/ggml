@@ -66,7 +66,7 @@ int main(void) {
 
     // Mark the "result" tensor to be computed
     ggml_build_forward_expand(gf, result);
-    ggml_graph_print(gf);
+    // ggml_graph_print(gf);
     // ggml_graph_dump_dot(gf, NULL, "debug.dot");
 
     // 4. Run the computation
@@ -82,7 +82,7 @@ int main(void) {
     }
     printf(" ]\n");
 
-    printf("mul mat (%d x %d) (transposed result):\n[", (int) result->ne[0], (int) result->ne[1]);
+    printf("mul mat (%d x %d) (transposed result):\n[", (int) result->ne[1], (int) result->ne[0]);
     for (int j = 0; j < result->ne[1]/* rows */; j++) {
         if (j > 0) {
             printf("\n");

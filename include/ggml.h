@@ -668,8 +668,8 @@ extern "C" {
 
         struct ggml_backend_buffer * buffer;
 
-        int64_t ne[GGML_MAX_DIMS]; // number of elements
-        size_t  nb[GGML_MAX_DIMS]; // stride in bytes:
+        int64_t ne[GGML_MAX_DIMS]; // number of elements，表示张量在每一个维度上的元素个数
+        size_t  nb[GGML_MAX_DIMS]; // stride in bytes: 表示在每一个维度上，索引增加 1 时，内存指针需要跳过的字节数步长（Stride）
                                    // nb[0] = ggml_type_size(type)
                                    // nb[1] = nb[0]   * (ne[0] / ggml_blck_size(type)) + padding
                                    // nb[i] = nb[i-1] * ne[i-1]
@@ -678,6 +678,7 @@ extern "C" {
         enum ggml_op op;
 
         // op params - allocated as int32_t for alignment
+        // 存储特定操作（Operation）所需的额外参数。
         int32_t op_params[GGML_MAX_OP_PARAMS / sizeof(int32_t)];
 
         int32_t flags;
