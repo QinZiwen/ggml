@@ -21,7 +21,7 @@ if (NOT ACCELERATE_FRAMEWORK)
     message(FATAL_ERROR "未找到 Mac Accelerate 框架，无法启用硬件加速！")
 endif()
 set(TEST_TARGET simple-benchmark)
-add_executable(${TEST_TARGET} benchmark.c)
+add_executable(${TEST_TARGET} benchmark.cpp)
 target_link_libraries(${TEST_TARGET} PRIVATE ggml ${ACCELERATE_FRAMEWORK})
 target_compile_definitions(${TEST_TARGET} PRIVATE
     GGML_USE_ACCELERATE
