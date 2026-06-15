@@ -135,12 +135,16 @@ extern "C" {
         // CPU device using system memory
         GGML_BACKEND_DEVICE_TYPE_CPU,
         // GPU device using dedicated memory
+        // 虽然从硬件架构上看，Apple Silicon 是统一内存架构（UMA），理论上更接近 IGPU（集成 GPU）的特征，
+        // 但在 GGML 的实际分类中，它通常作为 GPU 类型进行注册。
+        // 这是因为 Metal 后端拥有独立的计算队列和专门优化的内核，性能特征与传统独立 GPU 相似。
         GGML_BACKEND_DEVICE_TYPE_GPU,
         // integrated GPU device using host memory
         GGML_BACKEND_DEVICE_TYPE_IGPU,
         // accelerator devices intended to be used together with the CPU backend (e.g. BLAS or AMX)
         GGML_BACKEND_DEVICE_TYPE_ACCEL,
         // "meta" device wrapping multiple other devices for tensor parallelism
+        // 逻辑概念，无物理硬件，把大任务拆给多个真实的 GPU 执行
         GGML_BACKEND_DEVICE_TYPE_META,
     };
 
