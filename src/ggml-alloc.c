@@ -112,16 +112,39 @@ struct free_block {
 };
 
 struct tallocr_chunk {
-    struct free_block free_blocks[MAX_FREE_BLOCKS];
-    int n_free_blocks;
-    size_t max_size;
+    struct free_block free_blocks[MAX_FREE_BLOCKS];  // 描述一个空闲内存块，记录了它在缓冲区内的起始偏移量（offset）和大小（size）。
+    int n_free_blocks;  // 代表一个内存块（chunk）。它维护着一个 free_blocks 数组，管理该 chunk 内所有空闲区域。
+    size_t max_size;    // max_size 记录了此 chunk 中最大的空闲块大小，用于快速判断是否能满足分配请求。
 };
 
+// ggml_dyn_tallocr 是 ggml-alloc 中一个至关重要的内部动态内存分配器，它被用来管理单个后端缓冲区（buffer）内部的空闲内存。你可以将它理解为一个轻量级的、专用于特定后端内存池的“malloc”实现。
+// 核心职责是：在已经分配好的一个大块内存（由 ggml_vbuffer 管理）里，高效地处理 malloc（分配）和 free（释放）请求，并通过best-fit等算法最大限度地减少内存碎片
+/*
+核心机制与运作方式
+初始化
+ggml_dyn_tallocr 在创建时（通过 ggml_dyn_tallocr_new），会初始化第一个 chunk，其内部通常只有一个从偏移量0开始、覆盖整个缓冲区的 free_block。
+
+分配内存（ggml_dyn_tallocr_alloc）
+1. 选择Chunk：分配器会遍历 chunks，找到 max_size 大于等于请求大小的第一个 chunk（最佳适配策略）。
+2. 查找Block：在该 chunk 的 free_blocks 数组中，找到一个大小足够且最接近请求大小的空闲块（这也是最佳适配）。
+3. 拆分或占用：
+    如果找到的空闲块大小恰好等于请求大小，则直接将其从空闲列表中移除。
+    如果空闲块更大，则将其拆分为两个：一个大小正好是请求大小（分配给用户），另一个是剩余的（放回空闲列表）。
+4. 记录分配（调试模式下）：将分配的张量和地址存入 allocated_tensors 列表。
+
+释放内存（ggml_dyn_tallocr_free）
+1. 标记为释放：将张量对应的内存块重新标记为 free_block。
+2. 合并相邻块：检查该释放块在缓冲区中是否与其他的 free_block 相邻。如果是，则将它们合并成一个更大的连续空闲块，以防止碎片化。
+3. 更新管理信息：更新 n_free_blocks 和 max_size。
+
+重置（ggml_dyn_tallocr_reset）
+清空所有 chunks 并重置状态，通常保留一个覆盖整个区域的大的 free_block。这通常在重新规划内存布局（reserve）时发生，可以快速回收所有内存。
+*/
 struct ggml_dyn_tallocr {
-    size_t alignment;
-    size_t max_chunk_size;
-    struct tallocr_chunk * chunks[GGML_VBUFFER_MAX_CHUNKS];
-    int n_chunks;
+    size_t alignment;  // 分配的内存地址对齐要求（例如，CUDA通常要求128字节或256字节对齐）。所有分配出的地址都将是该值的整数倍。
+    size_t max_chunk_size;  // 单个内存块（chunk）的最大大小。用于限制单次分配的大小，或者将缓冲区划分为更易管理的区域。
+    struct tallocr_chunk * chunks[GGML_VBUFFER_MAX_CHUNKS];  // 指向 tallocr_chunk 指针的数组。每个 chunk 可以看作缓冲区内部的一个独立内存区域，拥有自己的空闲块列表。
+    int n_chunks;  // 当前已使用的 chunks 数量。
 
 #ifdef GGML_ALLOCATOR_DEBUG
     struct {
@@ -420,6 +443,7 @@ static size_t ggml_vbuffer_size(struct vbuffer * buf) {
     return size;
 }
 
+// ggml_vbuffer_alloc 根据预先规划的 talloc 布局，为每个内存块（chunk）实际分配物理内存，组装成一个包含多个后端缓冲区的“虚拟缓冲区”（vbuffer）。
 static struct vbuffer * ggml_vbuffer_alloc(ggml_backend_buffer_type_t buft, const struct ggml_dyn_tallocr * talloc, enum ggml_backend_buffer_usage usage) {
     struct vbuffer * buf = (struct vbuffer *)calloc(1, sizeof(struct vbuffer));
     if (buf == NULL) {
@@ -464,8 +488,8 @@ struct hash_node {
 };
 
 struct tensor_alloc {
-    int buffer_id;
-    struct buffer_address addr;
+    int buffer_id;  // 目标缓冲区索引：指明该张量应分配在哪个后端缓冲区
+    struct buffer_address addr;  // 具体内存地址信息：记录张量在缓冲区内的起始偏移量
     size_t size_max; // 0 = pre-allocated, unused, or view
 };
 
@@ -478,19 +502,20 @@ struct node_alloc {
     struct tensor_alloc src[GGML_MAX_SRC];
 };
 
+// ggml_gallocr 结构体确实是 ggml-alloc 内存分配器的核心大脑，它管理着所有后端缓冲区（buffers）的分配、复用和调度信息，是连接计算图（graph）和物理内存的桥梁。
 struct ggml_gallocr {
-    ggml_backend_buffer_type_t * bufts; // [n_buffers]
-    struct vbuffer ** buffers; // [n_buffers]
-    struct ggml_dyn_tallocr ** buf_tallocs; // [n_buffers]
-    int n_buffers;
+    ggml_backend_buffer_type_t * bufts; // [n_buffers]  指向缓冲区类型数组的指针，每个元素对应一个后端（CPU、CUDA 等）的缓冲区类型。它定义了“用什么类型的内存”。
+    struct vbuffer ** buffers; // [n_buffers]  指向虚拟缓冲区数组的指针，每个元素是一个实际的缓冲区实例，包含已分配的内存块。它代表了“实际分配的内存”。
+    struct ggml_dyn_tallocr ** buf_tallocs; // [n_buffers]  指向动态分配器数组的指针，每个元素用于在对应的缓冲区内部进行具体的内存分配和回收管理。
+    int n_buffers;  // 缓冲区总数，通常等于调度器中的后端数量。
 
     struct ggml_hash_set hash_set;
-    struct hash_node * hash_values; // [hash_set.size]
+    struct hash_node * hash_values; // [hash_set.size]。与 hash_set 对应的值数组，存储每个张量的分配信息（缓冲区ID、偏移量、大小等）。
 
-    struct node_alloc * node_allocs; // [n_nodes]
+    struct node_alloc * node_allocs; // [n_nodes]  数组中每个元素对应图中一个计算节点（node）及其所有源张量（src）的分配信息。
     int n_nodes;
 
-    struct leaf_alloc * leaf_allocs; // [n_leafs]
+    struct leaf_alloc * leaf_allocs; // [n_leafs]  数组中每个元素对应一个叶子节点（leaf，通常是输入张量或权重）的分配信息
     int n_leafs;
 };
 
@@ -821,6 +846,8 @@ static void ggml_gallocr_alloc_graph_impl(ggml_gallocr_t galloc, struct ggml_cgr
     }
 }
 
+// ggml_gallocr_reserve_n_impl 是 ggml-alloc 的核心预留函数，它根据计算图和后端分配信息，计算并存储完整的内存布局方案，同时按需重新分配底层物理缓冲区，为后续的实际内存分配做好准备
+// 分析图 → 规划内存布局 → 按需扩容物理内存。
 static bool ggml_gallocr_reserve_n_impl(
         ggml_gallocr_t galloc, struct ggml_cgraph * graph, const int * node_buffer_ids, const int * leaf_buffer_ids, bool no_alloc) {
     size_t min_hash_size = graph->n_nodes + graph->n_leafs;
@@ -864,7 +891,7 @@ static bool ggml_gallocr_reserve_n_impl(
             struct hash_node * hn = ggml_gallocr_hash_get(galloc, node);
             node_alloc->dst.buffer_id = hn->buffer_id;
             node_alloc->dst.addr = hn->addr;
-            node_alloc->dst.size_max  = ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], node);
+            node_alloc->dst.size_max  = ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], node);  // size_max 记录了张量在特定后端（如 GPU）上实际占据的内存大小，考虑了对齐、填充等要求
         }
         for (int j = 0; j < GGML_MAX_SRC; j++) {
             struct ggml_tensor * src = node->src[j];
@@ -993,11 +1020,13 @@ static void ggml_gallocr_init_tensor(ggml_gallocr_t galloc, struct ggml_tensor *
     }
 }
 
+// true	不需要重新分配（已有内存足够）
+// false	需要重新分配（没有内存或内存不足）
 static bool ggml_gallocr_node_needs_realloc(ggml_gallocr_t galloc, struct ggml_tensor * node, struct tensor_alloc * talloc) {
     size_t node_size = 0;
     if (!node->data && !node->view_src) {
         // If we previously had data but don't now then reallocate
-        if (talloc->buffer_id < 0) {
+        if (talloc->buffer_id < 0) {  // 如果 buffer_id < 0，说明从未被分配过 → 不需要重新分配（它是全新分配，不是"重新"分配）
             return false;
         }
         node_size = ggml_backend_buft_get_alloc_size(galloc->bufts[talloc->buffer_id], node);
@@ -1005,6 +1034,8 @@ static bool ggml_gallocr_node_needs_realloc(ggml_gallocr_t galloc, struct ggml_t
     return talloc->size_max >= node_size;
 }
 
+// true：内存布局失效，需要重新分配
+// false：内存布局有效，可以复用
 static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph * graph) {
     if (galloc->n_nodes != graph->n_nodes) {
 #ifndef NDEBUG
@@ -1048,6 +1079,14 @@ static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph
     return false;
 }
 
+/*
+在这个上下文里，“内存布局”它不涉及张量的形状或维度，而是特指每个张量在某个后端缓冲区（buffer）中的分配方案。
+它就是一张“内存分配地图”，记录了三个核心信息：
+1. 分配位置：每个张量被分配在哪个缓冲区里？（是CPU缓冲区，还是GPU缓冲区？）
+2. 分配顺序：在同一个缓冲区里，张量按什么顺序排列？
+3. 分配大小：每个张量占用的具体字节数（可能包含对齐或填充）。
+*/
+// ggml_gallocr_alloc_graph 是内存分配的执行器，它根据预留阶段规划的“内存地图”（tensor_alloc），为图中的每个张量设置真实的内存地址，完成从逻辑布局到物理指针的落地
 bool ggml_gallocr_alloc_graph(ggml_gallocr_t galloc, struct ggml_cgraph * graph) {
     if (ggml_gallocr_needs_realloc(galloc, graph)) {
         if (galloc->n_buffers == 1) {

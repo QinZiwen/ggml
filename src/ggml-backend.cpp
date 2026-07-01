@@ -58,6 +58,15 @@ size_t ggml_backend_buft_get_max_size(ggml_backend_buffer_type_t buft) {
     return SIZE_MAX;
 }
 
+// 计算在特定缓冲区类型（buft）中，为一个张量分配内存所需的总字节数
+// 它考虑了硬件对齐等额外开销，返回的实际分配大小通常大于或等于张量数据本身的逻辑大小（ggml_nbytes）
+/*
+哪些原因会导致物理大小 > 逻辑大小？
+    内存对齐：某些后端（如 CUDA）要求内存地址按 128 字节或 256 字节对齐，分配时会多分配一些。
+    缓存行对齐：为了性能，某些操作需要张量在特定边界对齐。
+    硬件限制：例如 GPU 的共享内存或矩阵乘法可能要求行数为特定倍数。
+    填充（Padding）：为了方便向量化访问，可能会在每行末尾添加填充。
+*/
 size_t ggml_backend_buft_get_alloc_size(ggml_backend_buffer_type_t buft, const struct ggml_tensor * tensor) {
     GGML_ASSERT(buft);
     // get_alloc_size is optional, defaults to ggml_nbytes
@@ -411,6 +420,7 @@ void ggml_backend_tensor_memset(struct ggml_tensor * tensor, uint8_t value, size
     buf->iface.memset_tensor(buf, tensor, value, offset, size);
 }
 
+// complete all pending operations (required if the backend supports async operations)
 void ggml_backend_synchronize(ggml_backend_t backend) {
     GGML_ASSERT(backend);
     if (backend->iface.synchronize == NULL) {
@@ -473,7 +483,7 @@ ggml_backend_dev_t ggml_backend_get_device(ggml_backend_t backend) {
 }
 
 // backend copy
-
+// 根据源张量和目标张量的内存位置（Host/Device），选择最优的拷贝路径（直接设置/获取/后端专用拷贝/临时缓冲），将数据从源张量同步复制到目标张量。
 void ggml_backend_tensor_copy(const struct ggml_tensor * src, struct ggml_tensor * dst) {
     GGML_ASSERT(ggml_are_same_layout(src, dst) && "cannot copy tensors with different layouts");
 
@@ -482,17 +492,17 @@ void ggml_backend_tensor_copy(const struct ggml_tensor * src, struct ggml_tensor
     }
 
     if (ggml_backend_buffer_is_host(src->buffer)) {
-        ggml_backend_tensor_set(dst, src->data, 0, ggml_nbytes(src));
+        ggml_backend_tensor_set(dst, src->data, 0, ggml_nbytes(src));  // 直接用 ggml_backend_tensor_set 将 CPU 数据推送到目标张量，因为 CPU 数据可以直接访问
     } else if (ggml_backend_buffer_is_host(dst->buffer)) {
-        ggml_backend_tensor_get(src, dst->data, 0, ggml_nbytes(src));
+        ggml_backend_tensor_get(src, dst->data, 0, ggml_nbytes(src)); // 直接用 ggml_backend_tensor_get 从源张量拉取数据到 CPU，因为目标 CPU 内存可以直接写入
     } else if (!ggml_backend_buffer_copy_tensor(src, dst)) {
 #ifndef NDEBUG
         GGML_LOG_DEBUG("%s: warning: slow copy from %s to %s\n", __func__, ggml_backend_buffer_name(src->buffer), ggml_backend_buffer_name(dst->buffer));
 #endif // NDEBUG
         size_t nbytes = ggml_nbytes(src);
-        void * data = malloc(nbytes);
-        ggml_backend_tensor_get(src, data, 0, nbytes);
-        ggml_backend_tensor_set(dst, data, 0, nbytes);
+        void * data = malloc(nbytes);   // 在 CPU 上分配临时内存
+        ggml_backend_tensor_get(src, data, 0, nbytes);  // Device → CPU
+        ggml_backend_tensor_set(dst, data, 0, nbytes);  // CPU → Device
         free(data);
     }
 }
@@ -535,6 +545,7 @@ void ggml_backend_event_free(ggml_backend_event_t event) {
     event->device->iface.event_free(event->device, event);
 }
 
+// 在指定后端的命令队列中插入一个时间标记点（异步操作，不阻塞CPU）。
 void ggml_backend_event_record(ggml_backend_event_t event, ggml_backend_t backend) {
     GGML_ASSERT(backend);
     GGML_ASSERT(backend->iface.event_record != NULL);
@@ -542,6 +553,7 @@ void ggml_backend_event_record(ggml_backend_event_t event, ggml_backend_t backen
     backend->iface.event_record(backend, event);
 }
 
+// 阻塞当前CPU线程，直到之前插入的标记点被后端执行到（即该标记点之前的所有操作全部完成）。
 void ggml_backend_event_synchronize(ggml_backend_event_t event) {
     GGML_ASSERT(event);
     GGML_ASSERT(event->device->iface.event_synchronize);
@@ -549,6 +561,7 @@ void ggml_backend_event_synchronize(ggml_backend_event_t event) {
     event->device->iface.event_synchronize(event->device, event);
 }
 
+// ggml_backend_event_wait 让 GPU 自己等待（不阻塞 CPU），实现设备间的细粒度流水线同步；而 ggml_backend_event_synchronize 让 CPU 等待（阻塞线程），用于需要 CPU 访问数据时的粗粒度同步。
 void ggml_backend_event_wait(ggml_backend_t backend, ggml_backend_event_t event) {
     GGML_ASSERT(backend);
     GGML_ASSERT(backend->iface.event_wait != NULL);
@@ -842,6 +855,7 @@ static int ggml_backend_sched_backend_id(ggml_backend_sched_t sched, ggml_backen
     return -1;
 }
 
+// 根据张量所在的缓冲区类型（buffer type），找到一个能同时支持该缓冲区类型和特定操作（op）的最高优先级后端（backend）
 static int ggml_backend_sched_backend_from_buffer(ggml_backend_sched_t sched, const struct ggml_tensor * tensor, const struct ggml_tensor * op) {
     ggml_backend_buffer_t buffer = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
     if (buffer == NULL) {
@@ -874,6 +888,7 @@ static char causes[GGML_DEFAULT_GRAPH_SIZE*16 + GGML_SCHED_MAX_SPLITS_DEBUG*GGML
 #define GET_CAUSE(node) ""
 #endif
 
+// ggml_backend_sched_backend_id_from_cur 根据张量当前所在位置（缓冲区类型、视图、权重等）以及是否允许主动卸载（op_offload），返回一个最适合执行该张量对应操作的后端 ID，以尽量减少跨设备数据拷贝，并在可能的情况下将计算优先安排到更高优先级（如 GPU）后端。
 // returns the backend that should be used for the node based on the current locations
 static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, struct ggml_tensor * tensor) {
     // assign pre-allocated nodes to their backend
@@ -914,10 +929,21 @@ static int ggml_backend_sched_backend_id_from_cur(ggml_backend_sched_t sched, st
         // skip ROPE since the rope freqs tensor is too small to choose a backend based on it
         // not an ideal solution
         if (tensor->op != GGML_OP_ROPE && src->buffer != NULL && src->buffer->usage == GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
+            /*
+            为什么不能直接在 ggml_backend_sched_backend_from_buffer 中支持这个逻辑？
+            因为 ggml_backend_sched_backend_from_buffer 检查的是 直接兼容性（supports_buft），而 op_offload 检查的是 间接处理能力（offload_op）。
+
+            这是两个完全不同的概念：
+
+            检查	            含义	                  CUDA 对 CPU 缓冲区的反应
+            supports_buft	    "我能直接操作这个内存"	    false（CUDA 不能直接访问 CPU 内存）
+            offload_op	        "我愿意先拷贝再计算"	    true（CUDA 可以拷贝到显存再计算）
+            */
             int src_backend_id = ggml_backend_sched_backend_from_buffer(sched, src, tensor);
             // check if a backend with higher prio wants to offload the op
             if (sched->op_offload && src_backend_id == sched->n_backends - 1 && ggml_backend_buffer_is_host(src->buffer)) {
                 for (int b = 0; b < src_backend_id; b++) {
+                    // ggml_backend_offload_op：后端是否愿意接受一个数据不在自己设备上的操作，并通过内部拷贝来完成。
                     if (ggml_backend_supports_op(sched->backends[b], tensor) && ggml_backend_offload_op(sched->backends[b], tensor)) {
                         SET_CAUSE(tensor, "1.off");
                         return b;
@@ -1011,6 +1037,19 @@ static void ggml_backend_sched_set_if_supported(ggml_backend_sched_t sched, stru
 }
 
 // assigns backends to ops and splits the graph into subgraphs that can be computed on the same backend
+/*
+ggml_backend_sched_split_graph 将一个完整的计算图，根据后端支持能力和数据位置，分割成多个可在不同后端独立执行的子图（splits），
+并自动在子图间插入数据副本（copy nodes），构建出一个包含完整内存管理指令的物理执行计划
+
+核心设计理念：
+“数据在哪，计算就尽量在哪（减少拷贝）；迫不得已跨设备时，通过副本（Copy）和依赖（Dependency）机制，
+在保证数据安全的前提下实现计算与传输的异步重叠（Pipeline），最大化异构硬件的利用率。”
+
+保持（Stay）优先：尽可能让张量留在它当前的后端执行操作，避免不必要的数据搬运（Pass 1）。
+扩散（Expand）与升级（Upgrade）：让高优先级后端（如 GPU）的计算区域尽量扩大，吞噬相邻节点，形成大的连续计算块（Pass 2, 3）。
+兜底（Fallback）与补齐（Complete）：确保每个节点最终都有后端负责，绝不遗漏（Pass 4）。
+隔离（Isolate）与拷贝（Copy）：在后端切换边界，通过物理副本切断数据依赖，让每个子图成为独立且可并发调度的执行单元（Pass 5）。
+*/
 void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
     // reset splits
     sched->n_splits = 0;
@@ -1032,12 +1071,15 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
 
     graph->uid = ggml_graph_next_uid();
 
+    // 建立tensor和backend之间的映射关系
     // pass 1: assign backends to ops with pre-allocated inputs
     for (int i = 0; i < graph->n_leafs; i++) {
         struct ggml_tensor * leaf = graph->leafs[i];
         int * leaf_backend_id = &tensor_backend_id(leaf);
         // do not overwrite user assignments
         if (*leaf_backend_id == -1) {
+            // ggml_backend_sched_backend_id_from_cur 根据张量当前所在位置（缓冲区类型、视图、权重等）以及是否允许主动卸载（op_offload），
+            // 返回一个最适合执行该张量对应操作的后端 ID，以尽量减少跨设备数据拷贝，并在可能的情况下将计算优先安排到更高优先级（如 GPU）后端。
             *leaf_backend_id = ggml_backend_sched_backend_id_from_cur(sched, leaf);
         }
     }
@@ -1116,6 +1158,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
             }
         }
     }
+    // 扩展剩余（包括 CPU，上面没有包括）
     // expand rest down
     {
         int cur_backend_id = -1;
@@ -1169,7 +1212,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
             for (int b = 0; b < sched->n_backends; b++) {
                 if (ggml_backend_supports_op(sched->backends[b], node)) {
                     int n_supported = 0;
-                    for (int j = 0; j < GGML_MAX_SRC; j++) {
+                    for (int j = 0; j < GGML_MAX_SRC; j++) {    //为什么tensor中没有变量记录源矩阵的个数，使用固定的编译时常量 GGML_MAX_SRC 可以让编译器更好地进行循环展开（loop unrolling），即便是循环开销也是很小的。
                         struct ggml_tensor * src = node->src[j];
                         if (src == NULL) {
                             continue;
@@ -1291,7 +1334,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                     if (split->n_inputs == GGML_SCHED_MAX_SPLIT_INPUTS) {
                         const size_t id = hash_id(src);
                         int src_backend_id = sched->hv_tensor_backend_ids[id];
-                        bool supported = ggml_backend_sched_buffer_supported(sched, src, cur_backend_id);
+                        bool supported = ggml_backend_sched_buffer_supported(sched, src, cur_backend_id);  // 当 supported == true 时，src 和当前分割的后端共享相同的内存空间，自然不用再分割了
                         if (src_backend_id != cur_backend_id && tensor_id_copy(id, cur_backend_id, 0) == NULL && !supported) {
                             need_new_split = true;
                             break;
@@ -1300,6 +1343,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
                 }
             }
 
+            // 开始新的分割，重置相关字段
             if (node_backend_id != cur_backend_id || need_new_split) {
                 split->i_end = i;
                 i_split++;
@@ -1351,7 +1395,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
 
                 if (src_backend_id != cur_backend_id && !ggml_backend_sched_buffer_supported(sched, src, cur_backend_id)) {
                     // create a copy of the input in the split's backend
-                    if (tensor_id_copy(src_id, cur_backend_id, 0) == NULL) {
+                    if (tensor_id_copy(src_id, cur_backend_id, 0) == NULL) {  // 意味着在当前后端（cur_backend_id）上，还没有为这个张量（src_id）创建过副本。
                         ggml_backend_t backend = sched->backends[cur_backend_id];
                         for (int c = 0; c < sched->n_copies; c++) {
                             struct ggml_tensor * tensor_copy = ggml_dup_tensor_layout(sched->ctx, src);
@@ -1408,6 +1452,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
 
     struct ggml_cgraph * graph_copy = &sched->graph;
 
+    // 为每个分割创建执行副本（graph_copy），通过在分割前插入依赖节点（input_dep）保证源数据存活和副本节点（input_cpy）确保目标内存就绪，来构建一个包含内存管理指令的、可执行的计算图。
     for (int i = 0; i < sched->n_splits; i++) {
         struct ggml_backend_sched_split * split = &sched->splits[i];
         split->graph = ggml_graph_view(graph, split->i_start, split->i_end);
@@ -1425,7 +1470,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
             struct ggml_tensor * input_cpy = tensor_id_copy(input_id, split->backend_id, sched->cur_copy);
 
             // add a dependency to the input source so that it is not freed before the copy is done
-            struct ggml_tensor * input_dep = ggml_view_tensor(sched->ctx, input);
+            struct ggml_tensor * input_dep = ggml_view_tensor(sched->ctx, input);  // input_dep 就像一个"引用计数"，input_dep->src[0] = input 建立了一个依赖关系
             input_dep->src[0] = input;
             sched->node_backend_ids[graph_copy->n_nodes] = sched->hv_tensor_backend_ids[input_id];
             graph_copy->nodes[graph_copy->n_nodes++] = input_dep;
@@ -1442,8 +1487,23 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
         }
     }
 
+    /*
+    为什么要添加到 leafs？
+    在 ggml-alloc 中，leafs（叶子节点）会优先被分配内存。
+        graph_inputs 是用户提供的输入张量，它们必须在整个图执行期间都存活。
+        每个分割的 inputs 是跨后端的数据副本，它们必须在分割执行前分配好内存。
+    通过将它们添加到 leafs，内存分配器会优先为这些张量分配内存，确保：
+        用户输入数据不会被覆盖。
+        副本张量在分割执行时已经有内存可用。
+    */
     if (sched->n_copies > 1) {
         // add input copies as leafs so that they are allocated first
+        /*
+        预留空间：在 n_copies > 1 时，代码 tensor_id_copy(id, backend_id, c) 为每个副本（c）都创建了一个独立的张量结构。
+        在执行前，ggml-alloc 会为这些副本在对应的后端（如 GPU）上分配好真实的内存（input_cpy->data）。这就是“预留”的物理含义。
+        保存输入：当流水线切换到某个副本（cur_copy = c）时，调度器会在执行分割前，
+        通过 ggml_backend_tensor_copy 将当前的输入数据拷贝到这个预先预留好的 input_cpy 中。这样，每个副本都保有了自己那一批数据的独立快照，互不干扰。
+        */
         for (int i = 0; i < sched->n_graph_inputs; i++) {
             struct ggml_tensor * input = sched->graph_inputs[i];
             size_t id = hash_id(input);
@@ -1562,12 +1622,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
                     ggml_backend_event_synchronize(sched->events[split_backend_id][sched->cur_copy]);
                 } else {
+                    // complete all pending operations (required if the backend supports async operations)
                     ggml_backend_synchronize(split_backend);
                 }
                 ggml_backend_tensor_copy(input, input_cpy);
             } else {
                 // wait for the split backend to finish using the input before overwriting it
                 if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
+                    // 在等"上一个使用这个槽位的拆分块完成计算"。
+                    // 这里会插入一个等待点，这个等待点会阻塞流中后续的所有操作，直到 ggml_backend_event_record 发出的“完成”信号
                     ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
                 } else {
                     ggml_backend_synchronize(split_backend);
@@ -1578,9 +1641,15 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 if (split->graph.n_nodes > 0 &&
                     ggml_backend_buffer_get_usage(input->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
                     ggml_backend_buffer_is_host(input->buffer) && (
-                    (node->src[0] == input_cpy && node->op == GGML_OP_MUL_MAT_ID)
+                    (node->src[0] == input_cpy && node->op == GGML_OP_MUL_MAT_ID)   // 带 ID 选择的矩阵乘法，即 MoE 中的专家选择矩阵乘
                     //|| (node->src[1] == input_cpy && node->op == GGML_OP_ADD_ID) /* GGML_OP_ADD_ID weights are small and not worth splitting */
                     )) {
+
+                    /*
+                    src[0] = 权重张量（形状：[embed_dim, d_model, n_expert]）
+                    src[1] = 输入激活（形状：[d_model, n_tokens]）
+                    src[2] = ID 选择器（形状：[n_tokens]）
+                    */
 
                     const int64_t n_expert   = node->op == GGML_OP_MUL_MAT_ID ? input->ne[2] : input->ne[1];
                     const size_t expert_size = node->op == GGML_OP_MUL_MAT_ID ? input->nb[2] : input->nb[1];
@@ -1716,7 +1785,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         // record the event of this copy
         if (split->n_inputs > 0) {
             if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
-                ggml_backend_event_record(sched->events[split_backend_id][sched->cur_copy], split_backend);
+                ggml_backend_event_record(sched->events[split_backend_id][sched->cur_copy], split_backend); // 表示"当前 split 已经消费完这个槽位中的输入数据"，后续的 split 可以安全地覆盖这个槽位来拷贝新的数据
             }
         }
     }
@@ -1735,6 +1804,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
     GGML_ASSERT(n_backends <= GGML_SCHED_MAX_BACKENDS);
     GGML_ASSERT(ggml_backend_dev_type(ggml_backend_get_device(backends[n_backends - 1])) == GGML_BACKEND_DEVICE_TYPE_CPU);
 
+    // 初始化阶段
     struct ggml_backend_sched * sched = (ggml_backend_sched *) calloc(1, sizeof(struct ggml_backend_sched));
 
     const char * GGML_SCHED_DEBUG = getenv("GGML_SCHED_DEBUG");
@@ -1880,6 +1950,7 @@ bool ggml_backend_sched_alloc_graph(ggml_backend_sched_t sched, struct ggml_cgra
     return true;
 }
 
+// 它的设计思路可以概括为：将计算图视为一个“数据流”问题，通过“先规划、后执行、重复用”的策略，在异构硬件上实现高效、低延迟的推理计算。
 enum ggml_status ggml_backend_sched_graph_compute(ggml_backend_sched_t sched, struct ggml_cgraph * graph) {
     enum ggml_status err = ggml_backend_sched_graph_compute_async(sched, graph);
     ggml_backend_sched_synchronize(sched);

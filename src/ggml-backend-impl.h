@@ -146,6 +146,14 @@ extern "C" {
         void * context;
     };
 
+    /*
+    context 指向的是具体后端实现的事件对象，例如：
+    后端	context 实际指向的类型
+    CUDA	cudaEvent_t
+    Metal	id<MTLEvent> 或 MTLSharedEventHandle
+    Vulkan	VkEvent
+    CPU	可能为 NULL 或指向一个简单的完成标志
+    */
     struct ggml_backend_event {
         struct ggml_backend_device * device;
         void * context;
