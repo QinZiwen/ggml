@@ -788,25 +788,28 @@ struct ggml_backend_sched {
     bool is_reset; // true if the scheduler has been reset since the last graph split
     bool is_alloc;
 
-    int n_backends;
+    int n_backends;  // 后端数量
 
-    ggml_backend_t backends[GGML_SCHED_MAX_BACKENDS];
-    ggml_backend_buffer_type_t bufts[GGML_SCHED_MAX_BACKENDS];
-    ggml_gallocr_t galloc;
+    // ggml_backend_dev_t 拥有内存资源，通过 ggml_backend_buffer_type_t 定义分配规则，最终由 gggml_backend_buffer_t 进行实际的内存分配和管理
+    ggml_backend_t backends[GGML_SCHED_MAX_BACKENDS];  // 后端实例，
+    ggml_backend_buffer_type_t bufts[GGML_SCHED_MAX_BACKENDS];  // 各后端的缓冲区类型
+    ggml_gallocr_t galloc;  // 内存分配器
 
     // hash map of the nodes in the graph
+    // 用于张量→后端ID的快速查找
     struct ggml_hash_set  hash_set;
-    int                 * hv_tensor_backend_ids; // [hash_set.size]
-    struct ggml_tensor ** hv_tensor_copies;      // [hash_set.size][n_backends][n_copies]
+    int                 * hv_tensor_backend_ids; // [hash_set.size] 张量对应的后端ID
+    struct ggml_tensor ** hv_tensor_copies;      // [hash_set.size][n_backends][n_copies] 张量副本
 
-    int * node_backend_ids; // [graph_size]
-    int * leaf_backend_ids; // [graph_size]
+    // 后端分配记录（用于检测变化）
+    int * node_backend_ids; // [graph_size] 当前节点的后端ID
+    int * leaf_backend_ids; // [graph_size] 当前叶子节点的后端ID
 
-    int * prev_node_backend_ids; // [graph_size]
-    int * prev_leaf_backend_ids; // [graph_size]
+    int * prev_node_backend_ids; // [graph_size] 上一次的节点后端ID（用于比较）
+    int * prev_leaf_backend_ids; // [graph_size] 上一次的叶子节点后端ID
 
     // copy of the graph with modified inputs
-    struct ggml_cgraph graph;
+    struct ggml_cgraph graph; // 复制的计算图（包含副本节点）
 
     // graph splits
     struct ggml_backend_sched_split * splits;
@@ -1117,6 +1120,11 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
     // thus, cpu will never be used unless weights are on cpu, or there are no gpu ops between cpu ops
     // ops unsupported by the backend being expanded will be left unassigned so that they can be assigned later when the locations of its inputs are known
     // expand gpu down
+    // 四个循环的设计是一种 "分层扩展 + 双向扫描" 策略：
+    //  分层：先高性能后端（GPU），再所有后端（包括 CPU）
+    //  双向：正向和反向各扫描一次，确保扩展的完整性
+    // 这种设计虽然看起来冗余，但实际上是在处理视图操作和优先级时的一种稳健策略，确保了调度质量。
+    // 前两个循环：GPU 优先扩展（排除 CPU）
     {
         int cur_backend_id = -1;
         for (int i = 0; i < graph->n_nodes; i++) {
@@ -1279,6 +1287,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
             }
         }
         // if the node is still unassigned, assign it to the first backend that supports it
+        // 🤔[疑问] 这个for循环是不是应该放在上一个for循环之前，保证cur_backend_id不等于-1 ？
         for (int b = 0; b < sched->n_backends && *cur_backend_id == -1; b++) {
             ggml_backend_sched_set_if_supported(sched, node, b, cur_backend_id);
         }
@@ -1345,7 +1354,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
 
             // 开始新的分割，重置相关字段
             if (node_backend_id != cur_backend_id || need_new_split) {
-                split->i_end = i;
+                split->i_end = i;  // index是左闭右开区间
                 i_split++;
                 if (i_split >= sched->splits_capacity) {
                     sched->splits_capacity *= 2;
@@ -1470,12 +1479,14 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
             struct ggml_tensor * input_cpy = tensor_id_copy(input_id, split->backend_id, sched->cur_copy);
 
             // add a dependency to the input source so that it is not freed before the copy is done
+            // 在异构计算中，input 可能在很早的节点就被计算出来了。如果没有 input_dep，GGML 的内存分配器会认为 input 已经没人用了，将其内存回收分配给别的张量。但此时跨设备拷贝可能还没完成，源数据被覆盖会导致拷贝出错。
             struct ggml_tensor * input_dep = ggml_view_tensor(sched->ctx, input);  // input_dep 就像一个"引用计数"，input_dep->src[0] = input 建立了一个依赖关系
             input_dep->src[0] = input;
             sched->node_backend_ids[graph_copy->n_nodes] = sched->hv_tensor_backend_ids[input_id];
             graph_copy->nodes[graph_copy->n_nodes++] = input_dep;
 
             // add a dependency to the input copy so that it is allocated at the start of the split
+            // input_cpy 是在目标设备（如 GPU）上真实存在的一块内存，用来接收拷贝过来的数据。后续的实际计算节点（比如矩阵乘法）需要读取 input_cpy。如果 input_cpy 没有尽早分配，分配器可能会把 GPU 上的内存坑位先分给别的张量，导致后续计算节点找不到足够大的连续空间来存放 input_cpy
             sched->node_backend_ids[graph_copy->n_nodes] = split->backend_id;
             graph_copy->nodes[graph_copy->n_nodes++] = input_cpy;
         }
@@ -1546,7 +1557,18 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
     }
 }
 
+/*
+ggml_backend_sched_alloc_splits 是 GGML 调度器（Scheduler）中负责为分割后的计算图（splits）分配实际内存的核心函数。它的主要职责是：
+1. 检测后端分配是否发生变化（backend IDs 是否改变）
+2. 调用内存分配器（gallocr）为所有张量分配物理内存
+3. 在分配失败时进行重新预留（re-reserve）
+*/
 static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
+    /*
+    为什么要检测这个变化？
+    1. 如果后端分配没变，且之前已经成功分配过内存，可以直接复用
+    2. 如果后端分配变了（比如某个节点从 CPU 改到了 GPU），需要重新分配，因为：不同后端的缓冲区类型（buft）不同，内存大小和对齐要求可能不同，跨设备的数据副本可能新增或删除
+    */
     bool backend_ids_changed = false;
     for (int i = 0; i < sched->graph.n_nodes; i++) {
         if (sched->node_backend_ids[i] != sched->prev_node_backend_ids[i] &&
@@ -1565,12 +1587,17 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
         }
     }
 
+    /*
+    backend_ids_changed == true → 布局可能需要重新计算（Reserve）
+    backend_ids_changed == false → 布局可能不需要重新计算
+    但无论哪种情况，都必须进行实际的 Alloc！执行 ggml_gallocr_alloc_graph
+    */
     // allocate graph
-    if (backend_ids_changed || !ggml_gallocr_alloc_graph(sched->galloc, &sched->graph)) {
+    if (backend_ids_changed || !ggml_gallocr_alloc_graph(sched->galloc, &sched->graph)) { // 尝试分配内存
 #ifndef NDEBUG
         GGML_LOG_DEBUG("%s: failed to allocate graph, reserving (backend_ids_changed = %d)\n", __func__, backend_ids_changed);
 #endif
-
+        // 分配失败，需要重新预留
         if (sched->debug_realloc > 0) {
             // we are interested only in situations where the graph was reallocated even though its size remained the same [GGML_SCHED_DEBUG_REALLOC]
             // example: https://github.com/ggml-org/llama.cpp/pull/17143
@@ -1585,11 +1612,13 @@ static bool ggml_backend_sched_alloc_splits(ggml_backend_sched_t sched) {
         // the re-allocation may cause the split inputs to be moved to a different address
         // synchronize without ggml_backend_sched_synchronize to avoid changing cur_copy
         for (int i = 0; i < sched->n_backends; i++) {
-            ggml_backend_synchronize(sched->backends[i]);
+            ggml_backend_synchronize(sched->backends[i]);  // 同步所有后端，确保没有正在进行的异步操作
         }
 
+        // 重新预留内存
         ggml_gallocr_reserve_n(sched->galloc, &sched->graph, sched->node_backend_ids, sched->leaf_backend_ids);
-        if (!ggml_gallocr_alloc_graph(sched->galloc, &sched->graph)) {
+        // 再次尝试分配
+        if (!ggml_gallocr_alloc_graph(sched->galloc, &sched->graph)) {   // 先reserve后alloc，是因为计算图中可以内存复用，所以reserve主要计算内存布局，方便后面alloc内存
             GGML_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             return false;
         }
@@ -1631,12 +1660,18 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
                     // 在等"上一个使用这个槽位的拆分块完成计算"。
                     // 这里会插入一个等待点，这个等待点会阻塞流中后续的所有操作，直到 ggml_backend_event_record 发出的“完成”信号
+                    // 不存在"重复等待"的问题：同一个 event 可能在同一 split 内被多次 wait，但后续 wait 都立即返回；跨轮次时，event 的状态保证在 wait 之前已经被之前的 Record 完成了
                     ggml_backend_event_wait(split_backend, sched->events[split_backend_id][sched->cur_copy]);
                 } else {
                     ggml_backend_synchronize(split_backend);
                 }
 
                 // when offloading MoE weights, we can reduce the amount of data copied by copying only the experts that are used
+                // GGML_OP_MUL_MAT_ID 是 ggml 中专用于 MoE（Mixture of Experts） 的矩阵乘操作：
+                // src[0] = 权重张量，形状 [embed_dim, d_model, n_expert]
+                // src[1] = 输入激活，形状 [d_model, n_tokens]
+                // src[2] = ID 选择器，形状 [n_tokens]
+                // GGML_OP_MUL_MAT_ID 允许为每个 token 选择不同的专家（expert）权重切片——权重张量沿第 3 维堆叠了 n_expert 个专家矩阵，src[2] 告诉它每个 token 该用哪个专家
                 ggml_tensor * node = split->graph.nodes[0];
                 if (split->graph.n_nodes > 0 &&
                     ggml_backend_buffer_get_usage(input->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
@@ -1730,6 +1765,7 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
                 } else {
                     // try async copy, but if not possible, we can still use a sync copy without synchronizing the dst backend, since we handle the synchronization here with multiple copies and events
                     // TODO: add public function to facilitate this, since applications do not have direct access to the backend interface
+                    // 这是一种典型的 "async-first, sync-fallback" 设计模式
                     if (!split_backend->iface.cpy_tensor_async || !split_backend->iface.cpy_tensor_async(input_backend, split_backend, input, input_cpy)) {
                         ggml_backend_synchronize(input_backend);
                         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {

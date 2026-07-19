@@ -509,6 +509,14 @@ static const struct ggml_backend_reg_i ggml_backend_blas_reg_i = {
     /* .get_proc_address = */ ggml_backend_blas_get_proc_address,
 };
 
+/*
+既然 BLAS 后端在底层也是 CPU 代码，那它存在的意义是什么？为什么不能直接用 CPU 后端？
+
+关键差异就在实际执行计算的核心函数里。BLAS 后端是通过替换 CPU 后端的“计算核心”来实现加速的。
+CPU 后端：它调用的是 ggml_cpu_ops 里的一组通用计算函数。对于矩阵乘法（GGML_OP_MUL_MAT），它会执行 GGML 自己的、用纯 C 语言编写的通用矩阵乘法实现。
+BLAS 后端：当 supports_op 判断某个矩阵乘法适合用 BLAS 加速时，它不会走 ggml_cpu_ops 的通用实现，而是会拦截这个操作，转而调用 ggml_blas_sgemm 等函数。
+这些函数内部会调用系统里安装的高性能外部 BLAS 库（如 OpenBLAS、MKL）。
+*/
 ggml_backend_reg_t ggml_backend_blas_reg(void) {
     static struct ggml_backend_reg ggml_backend_blas_reg = {
         /* .api_version = */ GGML_BACKEND_API_VERSION,

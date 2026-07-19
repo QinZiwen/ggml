@@ -502,6 +502,12 @@ struct node_alloc {
     struct tensor_alloc src[GGML_MAX_SRC];
 };
 
+/*
+这是一个图级别内存分配器，负责为计算图中的所有张量分配内存。它的核心能力是：
+1. 内存复用：通过分析张量的生命周期（使用 use_counts），让不同时存活的张量共享同一块内存区域
+2. 多后端支持：为不同后端的张量分配对应设备的内存
+3. 预留（Reserve）机制：可以先计算内存布局，再实际分配
+*/
 // ggml_gallocr 结构体确实是 ggml-alloc 内存分配器的核心大脑，它管理着所有后端缓冲区（buffers）的分配、复用和调度信息，是连接计算图（graph）和物理内存的桥梁。
 struct ggml_gallocr {
     ggml_backend_buffer_type_t * bufts; // [n_buffers]  指向缓冲区类型数组的指针，每个元素对应一个后端（CPU、CUDA 等）的缓冲区类型。它定义了“用什么类型的内存”。
@@ -1031,7 +1037,7 @@ static bool ggml_gallocr_node_needs_realloc(ggml_gallocr_t galloc, struct ggml_t
         }
         node_size = ggml_backend_buft_get_alloc_size(galloc->bufts[talloc->buffer_id], node);
     }
-    return talloc->size_max >= node_size;
+    return talloc->size_max >= node_size;   // 当前内存块足够大，可以复用 → 不需要重新分配
 }
 
 // true：内存布局失效，需要重新分配
@@ -1088,8 +1094,8 @@ static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph
 */
 // ggml_gallocr_alloc_graph 是内存分配的执行器，它根据预留阶段规划的“内存地图”（tensor_alloc），为图中的每个张量设置真实的内存地址，完成从逻辑布局到物理指针的落地
 bool ggml_gallocr_alloc_graph(ggml_gallocr_t galloc, struct ggml_cgraph * graph) {
-    if (ggml_gallocr_needs_realloc(galloc, graph)) {
-        if (galloc->n_buffers == 1) {
+    if (ggml_gallocr_needs_realloc(galloc, graph)) {  // 如果图结构或张量大小发生变化，则需要重新执行预留（reserve）流程
+        if (galloc->n_buffers == 1) {  // 意味着内存分配器只使用了一个后端缓冲区类型，即所有张量都分配在同一个后端设备（如 CPU 或 GPU）上
 #ifndef NDEBUG
             GGML_LOG_DEBUG("%s: reallocating buffers automatically\n", __func__);
 #endif
@@ -1104,13 +1110,14 @@ bool ggml_gallocr_alloc_graph(ggml_gallocr_t galloc, struct ggml_cgraph * graph)
         }
     }
 
-    // reset buffers
+    // reset buffers，重置缓冲区状态：将每个后端缓冲区（vbuffer）重置，为新一轮分配做准备。
     for (int i = 0; i < galloc->n_buffers; i++) {
         if (galloc->buffers[i] != NULL) {
             ggml_vbuffer_reset(galloc->buffers[i]);
         }
     }
 
+    // 执行内存分配：遍历图中的叶子节点（leafs）和计算节点（nodes），根据先前存储在 node_allocs 和 leaf_allocs 中的分配信息（缓冲区ID、偏移量、大小），调用 ggml_vbuffer_tensor_alloc 将张量与物理内存地址绑定。
     // allocate the graph tensors from the previous assignments
     // leafs
     for (int i = 0; i < graph->n_leafs; i++) {

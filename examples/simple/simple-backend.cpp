@@ -105,6 +105,16 @@ struct ggml_tensor * compute(simple_model & model, struct ggml_cgraph * gf) {
     ggml_backend_tensor_set(model.b, matrix_B, 0, ggml_nbytes(model.b));
 
     // compute the graph
+    // model.sched中就有ggml_cgraph，为什么这里还需要传递gf。这里传递的gf和sched中的有什么不一样吗？
+    // 如果已经 alloc 过，gf 参数完全被忽略
+    // 如果没有 alloc 过，ggml_backend_sched_graph_compute内部会
+    /*
+        if (!sched->is_alloc) {
+            if (!ggml_backend_sched_alloc_graph(sched, graph)) {
+                return GGML_STATUS_ALLOC_FAILED;
+            }
+        }
+    */
     ggml_backend_sched_graph_compute(model.sched, gf);
 
     // in this case, the output tensor is the last one in the graph
