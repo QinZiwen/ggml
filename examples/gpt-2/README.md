@@ -223,3 +223,17 @@ main:   sample time =    91.43 ms
 main:  predict time =  2518.29 ms
 main:    total time =  3544.32 ms
 ```
+
+# 推荐学习顺序
+
+main-ctx.cpp  →  main-alloc.cpp  →  main-backend.cpp  →  main-sched.cpp  →  main-batched.cpp
+理由：
+
+步骤	文件名	学什么
+①	main-ctx.cpp	ggml 最核心的编程模型：ggml_init、创建张量、构建计算图、ggml_graph_compute_with_ctx。这是所有其他例子的基础，必须从这里开始。
+②	main-alloc.cpp	ggml_gallocr 自动内存管理。理解如何将图构建与内存分配分离，以及 no_alloc、ggml_set_input/output 的含义。
+③	main-backend.cpp	ggml_backend 后端抽象层。理解如何让代码跨 CPU / GPU 运行，以及 ggml_backend_alloc_ctx_tensors、ggml_backend_tensor_set/get 的工作方式。
+④	main-sched.cpp	ggml_backend_sched 后端调度器。理解生产级推理引擎如何跨多后端（GPU + BLAS + CPU）混合调度。这是 llama.cpp 实际使用的架构模式。
+⑤	main-batched.cpp	批处理和多序列管理。理解 KV cache 共享、KQ_mask 机制、环形 buffer 管理。这个不需要先看前面 4 个——它偏向"特性"而非"抽象层次"。
+
+这四个文件本质上是 ggml 框架 API 演进史的一个微观缩影——从手动管理一切 → 自动分配器 → 后端抽象 → 多后端调度器。

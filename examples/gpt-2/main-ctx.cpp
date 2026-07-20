@@ -706,6 +706,8 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    gpt_print_params(params);
+
     if (params.seed < 0) {
         params.seed = time(NULL);
     }
@@ -746,6 +748,11 @@ int main(int argc, char ** argv) {
     // tokenize the prompt
     std::vector<gpt_vocab::id> embd_inp = ::gpt_tokenize(vocab, params.prompt);
 
+    /*
+    model.hparams.n_ctx: 模型的最大上下文长度（GPT-2的默认值是1024）
+    embd_inp.size(): 输入提示词(prompt)的token数量
+    差值: 上下文窗口中剩余可用的位置数
+    */
     params.n_predict = std::min(params.n_predict, model.hparams.n_ctx - (int) embd_inp.size());
 
     printf("%s: prompt: '%s'\n", __func__, params.prompt.c_str());
@@ -830,7 +837,7 @@ int main(int argc, char ** argv) {
         printf("%s: mem per token = %8zu bytes\n", __func__, mem_per_token);
         printf("%s:     load time = %8.2f ms\n", __func__, t_load_us/1000.0f);
         printf("%s:   sample time = %8.2f ms\n", __func__, t_sample_us/1000.0f);
-        printf("%s:  predict time = %8.2f ms / %.2f ms per token\n", __func__, t_predict_us/1000.0f, t_predict_us/1000.0f/n_past);
+        printf("%s:  predict time = %8.2f ms, n_past = %8.2d, %8.2f ms per token\n", __func__, t_predict_us/1000.0f, n_past, t_predict_us/1000.0f/n_past);
         printf("%s:    total time = %8.2f ms\n", __func__, (t_main_end_us - t_main_start_us)/1000.0f);
     }
 

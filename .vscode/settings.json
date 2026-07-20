@@ -1,4 +1,5 @@
 {
+    "Codegeex.RepoIndex": true,
     "cmake.generator": "Ninja",
     "cmake.buildDirectory": "${workspaceFolder}/build",
     "cmake.configureOnOpen": true

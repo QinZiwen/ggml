@@ -115,6 +115,28 @@ void gpt_print_usage(int /*argc*/, char ** argv, const gpt_params & params) {
     fprintf(stderr, "\n");
 }
 
+void gpt_print_params(const gpt_params & params) {
+    fprintf(stderr, "-------------- gpt_params ---------------\n");
+    fprintf(stderr, "seed: %d\n", params.seed);
+    fprintf(stderr, "n_threads: %d\n", params.n_threads);
+    fprintf(stderr, "prompt: %s\n", params.prompt.c_str());
+    fprintf(stderr, "n_predict: %d\n", params.n_predict);
+    fprintf(stderr, "top_k: %d\n", params.top_k);
+    fprintf(stderr, "top_p: %.1f\n", params.top_p);
+    fprintf(stderr, "temp: %.1f\n", params.temp);
+    fprintf(stderr, "repeat_last_n: %d\n", params.repeat_last_n);
+    fprintf(stderr, "repeat_penalty: %.2f\n", (double)params.repeat_penalty);
+    fprintf(stderr, "n_batch: %d\n", params.n_batch);
+    fprintf(stderr, "n_ctx: %d\n", params.n_ctx);
+    fprintf(stderr, "n_gpu_layers: %d\n", params.n_gpu_layers);
+    fprintf(stderr, "ignore_eos: %s\n", params.ignore_eos ? "true" : "false");
+    fprintf(stderr, "model: %s\n", params.model.c_str());
+    fprintf(stderr, "token_test: %s\n", params.token_test.c_str());
+    fprintf(stderr, "interactive: %s\n", params.interactive ? "true" : "false");
+    fprintf(stderr, "interactive_port: %d\n", params.interactive_port);
+    fprintf(stderr, "-------------- gpt_params ---------------\n");
+}
+
 std::string gpt_random_prompt(std::mt19937 & rng) {
     const int r = rng() % 10;
     switch (r) {

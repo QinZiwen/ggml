@@ -5,7 +5,7 @@
             "name": "simple-demo",
             "type": "lldb",                           // macOS 上推荐使用 lldb
             "request": "launch",
-            "program": "${workspaceFolder}/build/bin/simple-demo", // 调试的可执行文件路径
+            "program": "${workspaceFolder}/build-debug/bin/simple-demo", // 调试的可执行文件路径
             "args": [],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: Build",           // 调试前执行的任务名，必须和 tasks.json 里的 label 完全一致
@@ -15,8 +15,18 @@
             "name": "simple-backend",
             "type": "lldb",                           // macOS 上推荐使用 lldb
             "request": "launch",
-            "program": "${workspaceFolder}/build/bin/simple-backend", // 调试的可执行文件路径
+            "program": "${workspaceFolder}/build-debug/bin/simple-backend", // 调试的可执行文件路径
             "args": [],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "CMake: Build",           // 调试前执行的任务名，必须和 tasks.json 里的 label 完全一致
+            "console": "integratedTerminal",
+        },
+        {
+            "name": "gpt-2-ctx",
+            "type": "lldb",                           // macOS 上推荐使用 lldb
+            "request": "launch",
+            "program": "${workspaceFolder}/build-debug/bin/gpt-2-ctx", // 调试的可执行文件路径
+            "args": ["-m", "${workspaceFolder}/examples/gpt-2/models/gpt-2-117M/ggml-model-gpt-2-117M.bin", "-p", "I have a dream"],
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "CMake: Build",           // 调试前执行的任务名，必须和 tasks.json 里的 label 完全一致
             "console": "integratedTerminal",
